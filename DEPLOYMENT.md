@@ -14,8 +14,10 @@ python -m src.main                    # MCP over stdio + approvals page on :8765
 python -m pytest tests/ -q            # verify: tool shapes, math, approval flow
 ```
 
-Or as a service: `docker build -t storelink-mcp . && docker run -p 8000:8000 -p 8765:8765 storelink-mcp`
-→ MCP at `http://localhost:8000/mcp`, approvals at `http://localhost:8765`.
+Or as a service: `docker build -t storelink-mcp . && docker run -p 8000:8000 -p 8765:8765 -v storelink-logs:/app/logs storelink-mcp`
+→ MCP at `http://localhost:8000/mcp`, approvals at `http://localhost:8765`,
+audit trail at `http://localhost:8765/audit`. The volume matters: it holds the
+audit trail, which must outlive the container.
 A stdio config for Claude Code lives in [`.mcp.json`](.mcp.json). Demo prompt
 and crafted scenarios: see "Verify" at the bottom.
 
@@ -82,6 +84,51 @@ Code flows *in*; data never flows *out*. That asymmetry is the whole design.
   redeploy drops pending orders (they're simply re-raised). Making the ledger
   SQLite/Cloud SQL-backed is on the pre-go-live list below.
 
+## Logs: debugging (Duvo) and the audit trail (Korral)
+
+Two streams, two readers, two retention rules — see the README for why they
+are separate files. Both are line-delimited JSON under `STORELINK_LOG_DIR`.
+
+**Debugging a session (Forward Deployed Engineer)** — everything the agent did
+is in `diagnostic.jsonl`. `logquery` is the shortcut; `grep` and `jq` work on
+the same file.
+
+```bash
+python -m src.logquery sessions                    # who connected, how many calls, how many errors
+python -m src.logquery trace --session sess-9a1c   # replay that session, call by call
+python -m src.logquery trace --session sess-9a1c --request 7   # one call in detail
+python -m src.logquery trace --order RO-1001       # one order across both streams
+python -m src.logquery errors --since 1h           # what's failing right now
+python -m src.logquery tail -f                     # watch live while the agent runs
+python -m src.logquery trace --tool get_stock_position --json | jq .result.value
+```
+
+A `tool_call` entry carries the arguments as received, the outcome, the
+duration, the result the agent saw, and the StoreLink calls made underneath it
+— so "why did it order 480 units?" is answerable from the log alone.
+
+**Checking what was ordered (buyer)** — `http://<approvals-host>/audit`: every
+proposal, decision and StoreLink submission, newest first, filterable by order
+/ store / SKU / date, with a CSV download for finance. Each proposal shows the
+agent's stated reason *and* the stock numbers the agent had read. Same data in
+a terminal: `python -m src.logquery audit --store ST-047 [--csv]`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `STORELINK_LOG_DIR` | `logs` | Where `diagnostic.jsonl` and `audit.jsonl` are written |
+| `STORELINK_LOG_MAX_BYTES` | `10485760` | Rotation threshold for the diagnostic log (audit is never rotated) |
+| `STORELINK_DIAG_RESULT_BYTES` | `4096` | How much of each tool result to capture; `0` to capture none |
+| `STORELINK_DIAG` | `on` | `off` silences the diagnostic stream. The audit stream has no off switch |
+
+**In the tenancy:** both streams stay inside Korral's project, like everything
+else. Cloud Run's filesystem is ephemeral, so `audit.jsonl` needs a durable
+home before go-live (GCS bucket via mount, or the same database the order
+ledger moves to) — a revision swap must not lose the record of what was
+ordered. `diagnostic.jsonl` is disposable and can just be tailed into Cloud
+Logging. Tool arguments are logged verbatim (credential-shaped keys redacted)
+and results captured up to 4 KB; if Korral classes stock data as sensitive,
+set `STORELINK_DIAG_RESULT_BYTES=0` — the audit trail is unaffected.
+
 ## To confirm with Korral IT before day 1
 
 1. **Network path to StoreLink:** URL, port, TLS, firewall rules, DNS from
@@ -103,7 +150,9 @@ Code flows *in*; data never flows *out*. That asymmetry is the whole design.
    approval click? Any freeze windows (e.g. weekend promos) an 11pm fix must
    respect?
 6. **Observability handoff:** who at Korral gets alerted on StoreLink 5xx /
-   auth failures, and where do they want to see uptime dashboards?
+   auth failures, and where do they want to see uptime dashboards? Also: how
+   long should the diagnostic stream be retained, and who besides the buying
+   team may read the audit trail (it names who approved what)?
 7. **StoreLink rate limits and staging:** is there a test StoreLink
    environment, and what call volume is acceptable against prod (180 stores ×
    frequent stock checks adds up)?
@@ -111,8 +160,12 @@ Code flows *in*; data never flows *out*. That asymmetry is the whole design.
 ## Pre-go-live gaps (known, deliberate for the pilot)
 
 - Order ledger → SQLite/Cloud SQL (pending approvals must survive restarts).
-- Approvals page consolidated onto the main HTTP port (Cloud Run exposes one
-  port) and put behind IAP.
+- `audit.jsonl` → durable storage alongside it (GCS or the same database).
+  Cloud Run's disk is ephemeral; the audit trail must outlive a revision.
+- Approvals page **and the `/audit` trail** consolidated onto the main HTTP
+  port (Cloud Run exposes one port) and put behind IAP. IAP is also what turns
+  an approver's self-asserted name into an authenticated one
+  (`actor.verified: true`), without changing the audit record's shape.
 - Real StoreLink HTTP client swapped in behind the existing interface, with
   retry/backoff and a health endpoint that checks StoreLink reachability.
 
