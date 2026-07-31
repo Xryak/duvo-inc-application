@@ -15,11 +15,11 @@ from mcp.server import MCPServer
 from . import audit
 from .diagnostics import ToolCallLogger, instrument_storelink
 from .orders import OrderLedger
-from .storelink import NotFound, StubStoreLinkClient
+from .storelink import NotFound, StubStoreLinkClient, make_key_provider
 
 # Instrumented at construction so every upstream StoreLink call is attributed
 # to the tool call that caused it (see src/diagnostics.py).
-client = instrument_storelink(StubStoreLinkClient())
+client = instrument_storelink(StubStoreLinkClient(keys=make_key_provider()))
 ledger = OrderLedger(client)
 
 mcp = MCPServer(
@@ -58,9 +58,12 @@ def _daily_sales(store_id: str, sku: str, days: int) -> list[dict]:
 
 @mcp.tool()
 def list_stores() -> list[dict]:
-    """List all Korral stores (store_id, name, city, region).
+    """List all Korral stores (store_id, name, city, region, credentialed).
 
-    Use the returned store_id in every other tool.
+    Use the returned store_id in every other tool. `credentialed` says
+    whether this server holds a StoreLink key for the store; calls for a
+    store where it is false will fail until Korral IT provisions a key —
+    report that to the user rather than retrying.
     """
     return client.list_stores()
 

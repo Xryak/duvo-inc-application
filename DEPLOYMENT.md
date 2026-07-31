@@ -51,12 +51,28 @@ Code flows *in*; data never flows *out*. That asymmetry is the whole design.
 ## Secrets
 
 - The per-store `X-Korral-Store-Key`s live in **GCP Secret Manager in the
-  Korral project**. The server reads them at startup and re-reads
-  periodically, so Korral IT's weekly rotation is just "add a new secret
-  version" — no redeploy, no Duvo involvement, and Duvo never handles key
-  material out-of-band.
-- Nothing secret is in the image, the repo, or CI. The stub needs no secrets
-  at all, which is why local dev is zero-config.
+  Korral project**, mounted into the container as a JSON file
+  (`{"ST-001": "<key>", ...}`) whose path is `STORELINK_KEYS_FILE` (see
+  `secrets/storelink_keys.example.json` for the format). Korral IT's weekly
+  rotation is just "add a new secret version" — Cloud Run refreshes the
+  mounted file, the server stats it on every key lookup and picks the change
+  up with **no redeploy, no restart**, and Duvo never handles key material
+  out-of-band.
+- If StoreLink rejects a key mid-request (rotation raced an in-flight call),
+  the server force-reloads the file and retries once automatically. Two
+  failure shapes Korral IT will see:
+  - **Stale file after rotation** → that store's calls fail with `KeyExpired`,
+    naming the store and stating the request was not processed. Pending
+    approvals stay pending and can simply be re-approved once the new key
+    version lands.
+  - **Store missing from the file** → immediate `MissingStoreKey`; the store
+    shows `credentialed: false` in `list_stores`. Fix: add the key.
+- The server **refuses to start** if the secrets file is missing or malformed;
+  a malformed overwrite at runtime keeps the last good keys and logs a
+  warning. Keys never appear in logs, tool responses, or error messages.
+- Nothing secret is in the image, the repo, or CI. Local dev is zero-config:
+  with `STORELINK_KEYS_FILE` unset, fabricated dev keys cover every stub
+  store.
 
 ## Who owns what
 
@@ -144,8 +160,9 @@ set `STORELINK_DIAG_RESULT_BYTES=0` — the audit trail is unaffected.
    of it acceptable? (It ships unauthenticated on an internal port today —
    fine behind IAP, not fine otherwise.)
 4. **Secret Manager handoff:** can IT's rotation job write secret versions to
-   the pilot project, and what's the format (one secret per store vs. one
-   JSON blob)?
+   the pilot project, and what's the format? (The server currently reads one
+   JSON blob of all store keys; one-secret-per-store works with a thin
+   adapter in `StoreKeyProvider`.)
 5. **Deploy gate + change windows:** auto-deploy for the pilot, or a Korral
    approval click? Any freeze windows (e.g. weekend promos) an 11pm fix must
    respect?
