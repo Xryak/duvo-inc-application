@@ -1,0 +1,9 @@
+.git
+.venv
+.env
+prep/
+tests/
+__pycache__
+*.mov
+*.mp4
+.DS_Store

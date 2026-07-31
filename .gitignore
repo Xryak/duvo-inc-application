@@ -1,0 +1,21 @@
+# secrets
+.env
+
+# local prep / rehearsal materials (never pushed)
+prep/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# recordings
+*.mov
+*.mp4
+*.mkv
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
