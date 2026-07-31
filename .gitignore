@@ -1,5 +1,7 @@
 # secrets
 .env
+secrets/*
+!secrets/*.example.json
 
 # local prep / rehearsal materials (never pushed)
 prep/

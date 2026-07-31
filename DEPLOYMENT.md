@@ -2,7 +2,9 @@
 
 ## Prerequisites
 
-- Python 3.12+ (or Docker). No API keys needed — StoreLink is stubbed.
+- Python 3.12+ (or Docker). No API keys needed for the demo — StoreLink is
+  stubbed and, without `STORELINK_KEYS_FILE` set, dev keys are fabricated for
+  every store. For a real deployment, see *Store keys* below.
 
 ## Run locally
 
@@ -26,12 +28,43 @@ Hook it into Claude Code / Claude Desktop as a stdio server:
 }
 ```
 
+## Store keys (per-store, rotated weekly by Korral IT)
+
+The server loads per-store StoreLink keys from a JSON file:
+
+```json
+{"ST-001": "<key>", "ST-002": "<key>"}
+```
+
+Point `STORELINK_KEYS_FILE` at it (see `secrets/storelink_keys.example.json`).
+Korral IT overwrites this file on each weekly rotation — **atomically, via
+write-to-temp + rename** — and the server picks the change up on the next
+call, no restart needed. If a key is rejected mid-request (rotation raced the
+call), the server reloads the file and retries once automatically. Two
+failures Korral IT should know the shape of:
+
+- **Stale file after rotation** → calls for that store fail with a `KeyExpired`
+  message naming the store and stating the request was not processed. Fix: land
+  the rotated key in the file; in-flight approvals stay pending and can simply
+  be re-approved.
+- **Store missing from the file** → calls fail immediately with
+  `MissingStoreKey`; the store shows `credentialed: false` in `list_stores`.
+  Fix: add the key.
+
+The server refuses to start if the file is missing or malformed. Keys never
+appear in logs, tool responses, or error messages.
+
 ## Run as an in-network service (Docker)
 
 ```bash
 docker build -t storelink-mcp .
-docker run -p 8000:8000 -p 8765:8765 storelink-mcp
+docker run -p 8000:8000 -p 8765:8765 \
+  -v /srv/korral/storelink_keys.json:/secrets/storelink_keys.json:ro \
+  -e STORELINK_KEYS_FILE=/secrets/storelink_keys.json \
+  storelink-mcp
 ```
+
+(Omit the mount and env var to run the zero-setup demo with dev keys.)
 
 - MCP endpoint (streamable HTTP): `http://localhost:8000/mcp`
 - Human approvals page: `http://localhost:8765`
@@ -42,6 +75,7 @@ docker run -p 8000:8000 -p 8765:8765 storelink-mcp
 |---|---|---|
 | `APPROVALS_HOST` / `APPROVALS_PORT` | `127.0.0.1` / `8765` | Where the approvals page binds |
 | `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8000` | HTTP transport bind (only with `--transport http`) |
+| `STORELINK_KEYS_FILE` | *(unset — dev keys)* | Path to the per-store StoreLink keys JSON mounted by Korral IT |
 
 ## Verify it works (30 seconds)
 

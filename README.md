@@ -60,12 +60,47 @@ invisible to it.
   dumps burn context and add nothing to the decision.
 - **Supplier endpoint** — lead time is folded into `get_stock_position`.
 - **Store keys / auth** — the per-store `X-Korral-Store-Key` (rotated weekly by
-  Korral IT) lives in server config via `StoreKeyProvider`; no tool accepts or
-  returns a key. Agents address stores by `store_id` only.
+  Korral IT) lives in a mounted secrets file read via `StoreKeyProvider`; no
+  tool accepts or returns a key, and no error message ever contains one.
+  Agents address stores by `store_id` only. See *Secrets & key rotation* below.
 - **SKU search** — agents work from SKU codes the buyer provides; StoreLink has
   no search endpoint and we didn't invent one.
 - **Order cancel/edit** — the API doesn't offer it; the human Reject button is
   the kill switch.
+
+## Secrets & key rotation
+
+StoreLink keys are per-store and rotated weekly by Korral IT. The server reads
+them from a JSON file (`{"ST-001": "<key>", ...}`) pointed to by
+`STORELINK_KEYS_FILE` — the file IT overwrites on rotation. The file is
+stat'ed on every lookup and re-read when it changes, so rotations land
+**without a restart**; without the env var set, fabricated dev keys keep the
+stubbed demo runnable with zero setup.
+
+Every store-scoped StoreLink call goes through one wrapper (`_store_call`),
+which owns the two failure stories:
+
+**(a) Key rotates while a request is in flight.** The call goes out with the
+cached key, StoreLink rejects it, the wrapper force-reloads the secrets file
+and retries **exactly once** with the fresh key — normally invisible to the
+agent. The retry is safe even for the order write: a call rejected for auth
+was never processed. If the reloaded key is *still* rejected (the rotation
+hasn't reached this server's file yet), the call fails as `KeyExpired` with a
+message stating the store, that the key has expired, that the request was not
+processed, and who to call (Korral IT). If this happens while a human clicks
+Approve, the order simply stays `pending_approval` — nothing is lost, and
+Approve works again once the key lands.
+
+**(b) Agent asks for a store we hold no credential for.** Fails up front as
+`MissingStoreKey` — before any StoreLink traffic and before any order is
+created — naming the store and pointing at Korral IT. `list_stores` exposes a
+`credentialed` flag per store so the agent can see its actual reach instead of
+discovering it by failing.
+
+Operational edges: the server **refuses to start** if the secrets file is
+missing or malformed (better than running credential-less), but a malformed
+*overwrite* at runtime (e.g. read mid-write) keeps the last good keys and
+logs a warning rather than taking every store down.
 
 **Naming.** Tool names are the buyer's verbs (`get_stock_position`, not
 `get_inventory`); docstrings are written as agent-facing contracts, including
@@ -87,5 +122,5 @@ tests/test_tools.py  Tool shapes, derived math, approval lifecycle
 
 SQLite persistence for the order ledger (pending approvals must survive a
 restart), auth on the approvals page (SSO via reverse proxy), the real HTTPS
-StoreLink client with the key-rotation story, and deployment/runbook for
-Korral's network.
+StoreLink client (the key-loading/rotation layer it will sit on is done), and
+deployment/runbook for Korral's network.

@@ -10,7 +10,7 @@ import os
 import sys
 
 from .approvals_ui import start_approvals_server
-from .server import ledger, mcp
+from .server import client, ledger, mcp
 
 
 def main() -> None:
@@ -22,6 +22,7 @@ def main() -> None:
     port = int(os.getenv("APPROVALS_PORT", "8765"))
     start_approvals_server(ledger, host, port)
     print(f"Approvals page: http://{host}:{port}", file=sys.stderr)
+    print(f"Store keys: {client.key_source()}", file=sys.stderr)
 
     if args.transport == "http":
         mcp.run(
