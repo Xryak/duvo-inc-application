@@ -17,6 +17,7 @@ import itertools
 import threading
 from dataclasses import dataclass, field, asdict
 
+from . import audit
 from .storelink import StubStoreLinkClient
 
 PENDING = "pending_approval"
@@ -37,6 +38,7 @@ class Order:
     status: str = PENDING
     created_at: str = ""
     decided_at: str | None = None
+    decided_by: str | None = None  # self-asserted name from the approvals page
     storelink_order_id: str | None = None
     expected_delivery: str | None = None
 
@@ -63,7 +65,10 @@ class OrderLedger:
                 created_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             )
             self._orders[order.order_id] = order
-            return order
+        # Audit outside the lock: the buyer's trail records the proposal, and a
+        # slow disk should not serialise order creation.
+        audit.record_proposed(order)
+        return order
 
     def get(self, order_id: str) -> Order | None:
         return self._orders.get(order_id)
@@ -75,23 +80,46 @@ class OrderLedger:
         return [o for o in self._orders.values()
                 if o.store_id == store_id and o.sku == sku and o.status in OPEN_STATUSES]
 
-    def approve(self, order_id: str) -> Order:
-        """Human clicked Approve: submit to StoreLink, then mark submitted."""
+    def approve(self, order_id: str, actor: dict | None = None) -> Order:
+        """Human clicked Approve: submit to StoreLink, then mark submitted.
+
+        `actor` names the person who approved (built by
+        `audit.human_actor`); it is recorded on the order and in the audit
+        trail. Two audit entries are written, not one — the approval and the
+        StoreLink submission are distinct events, and if StoreLink refuses the
+        order the buyer needs to see that their approval did *not* result in
+        stock arriving.
+        """
+        actor = actor or audit.human_actor("")
         with self._lock:
             order = self._require_pending(order_id)
-            result = self._client.create_replenishment(order.store_id, order.sku, order.quantity)
+            try:
+                result = self._client.create_replenishment(order.store_id, order.sku, order.quantity)
+            except Exception as exc:
+                # The human did approve; StoreLink is what refused. Both facts
+                # go in the trail, and the order stays pending so it can be
+                # retried once the upstream problem is fixed.
+                audit.record_decision(order, approved=True, actor=actor)
+                audit.record_submission_failed(order, actor=actor, error=exc)
+                raise
+            order.decided_by = actor.get("name")
             order.status = SUBMITTED
             order.storelink_order_id = result["order_id"]
             order.expected_delivery = result["expected_delivery"]
             order.decided_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-            return order
+        audit.record_decision(order, approved=True, actor=actor)
+        audit.record_submitted(order, actor=actor)
+        return order
 
-    def reject(self, order_id: str) -> Order:
+    def reject(self, order_id: str, actor: dict | None = None) -> Order:
+        actor = actor or audit.human_actor("")
         with self._lock:
             order = self._require_pending(order_id)
             order.status = REJECTED
+            order.decided_by = actor.get("name")
             order.decided_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-            return order
+        audit.record_decision(order, approved=False, actor=actor)
+        return order
 
     def _require_pending(self, order_id: str) -> Order:
         order = self._orders.get(order_id)

@@ -19,3 +19,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# logs (diagnostic stream is disposable; audit.jsonl is data, not source)
+logs/
