@@ -139,6 +139,14 @@ missing or malformed (better than running credential-less), but a malformed
 *overwrite* at runtime (e.g. read mid-write) keeps the last good keys and
 logs a warning rather than taking every store down.
 
+Key events land in the diagnostic stream too, correlated to the request that
+hit them: `storelink_keys_loaded` (with the store ids whose credential
+changed — never the values), `storelink_key_rotation_retry`,
+`storelink_key_expired`, `storelink_keys_reload_failed`. A retry is invisible
+to the agent by design, so "did Tuesday's rotation cost us anything?" has to
+be answerable afterwards: `python -m src.logquery trace --grep key`. No key
+material is ever written to either log or into any error message.
+
 ## Structure
 
 ```

@@ -14,6 +14,7 @@ import os
 import pytest
 
 from src import server
+from src.eventlog import diagnostic_log
 from src.orders import OrderLedger, PENDING
 from src.storelink import (
     FileStoreKeyProvider,
@@ -165,3 +166,62 @@ def test_tool_surface_blocks_uncredentialed_store(monkeypatch):
     with pytest.raises(MissingStoreKey):
         server.create_replenishment_order("ST-030", SKU, 100, "restock")
     assert server.ledger.open_for("ST-030", SKU) == []  # no phantom pending order
+
+
+# --- key events are visible to the FDE ------------------------------------
+
+def _key_events():
+    return [r for r in diagnostic_log.read() if r["event"].startswith("storelink_key")]
+
+
+def test_transparent_rotation_retry_is_visible_in_the_diagnostic_log(keys_file):
+    """A retry the agent never notices still has to be answerable later:
+    'did this week's rotation cost us anything?' is a logquery question."""
+    client = StubStoreLinkClient(keys=FileStoreKeyProvider(str(keys_file)))
+    client.get_inventory(ST, SKU)
+
+    stamp = os.stat(keys_file).st_mtime_ns
+    client.rotate_key(ST, "key-week-B")
+    write_keys(keys_file, {ST: "key-week-B"})
+    os.utime(keys_file, ns=(stamp, stamp))
+    client.get_inventory(ST, SKU)
+
+    retries = [r for r in _key_events() if r["event"] == "storelink_key_rotation_retry"]
+    assert [r["store_id"] for r in retries] == [ST]
+    reloads = [r for r in diagnostic_log.read() if r["event"] == "storelink_keys_loaded"]
+    assert reloads[-1]["changed"] == [ST]      # which credential moved, not its value
+
+
+def test_key_expiry_is_logged_before_it_is_raised(keys_file):
+    client = StubStoreLinkClient(keys=FileStoreKeyProvider(str(keys_file)))
+    client.get_inventory(ST, SKU)
+    client.rotate_key(ST, "key-week-B")
+
+    with pytest.raises(KeyExpired):
+        client.get_inventory(ST, SKU)
+    # The whole story in order: rejected -> secrets re-read -> still rejected.
+    assert [r["event"] for r in _key_events()][-3:] == [
+        "storelink_key_rotation_retry", "storelink_keys_loaded", "storelink_key_expired"
+    ]
+
+
+def test_unreadable_secrets_file_is_logged_with_what_survived(keys_file):
+    provider = FileStoreKeyProvider(str(keys_file))
+    keys_file.write_text("{ truncated")
+    provider.refresh()
+
+    failure = [r for r in diagnostic_log.read() if r["event"] == "storelink_keys_reload_failed"][-1]
+    assert failure["keys_retained"] == 1
+    assert provider.get_key(ST) == "key-week-A"   # still serving the last good keys
+
+
+def test_no_key_material_ever_reaches_the_log(keys_file):
+    client = StubStoreLinkClient(keys=FileStoreKeyProvider(str(keys_file)))
+    client.get_inventory(ST, SKU)
+    client.rotate_key(ST, "key-week-B")
+    with pytest.raises(KeyExpired):
+        client.get_inventory(ST, SKU)
+
+    written = diagnostic_log.path.read_text()
+    assert "key-week-A" not in written and "key-week-B" not in written
+    assert ST in written  # store ids, on the other hand, are the whole point
