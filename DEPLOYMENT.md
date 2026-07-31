@@ -117,7 +117,13 @@ python -m src.logquery trace --order RO-1001       # one order across both strea
 python -m src.logquery errors --since 1h           # what's failing right now
 python -m src.logquery tail -f                     # watch live while the agent runs
 python -m src.logquery trace --tool get_stock_position --json | jq .result.value
+python -m src.logquery trace --grep key             # key loads, rotation retries, expiries
 ```
+
+That last one is the answer to Korral IT's question after a rotation window:
+a retried key is transparent to the agent, so the evidence that it happened
+(and whether anything failed) has to live in the log. Store ids and counts
+only — no key material is ever written.
 
 A `tool_call` entry carries the arguments as received, the outcome, the
 duration, the result the agent saw, and the StoreLink calls made underneath it

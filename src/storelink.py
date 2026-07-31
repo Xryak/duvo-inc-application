@@ -11,6 +11,12 @@ rejects it because Korral IT rotated keys while the request was in flight —
 reloads the secrets and retries exactly once. A key that is still rejected
 fails as `KeyExpired`; a store we hold no credential for fails up front as
 `MissingStoreKey`. Neither error ever contains a key value.
+
+Key events (secrets loaded, rotation retried, key expired) are emitted to the
+diagnostic stream as well as stderr, carrying store ids and counts but never
+key material — a transparent retry is invisible to the agent by design, and
+"did this week's rotation cost us anything?" has to be answerable from
+`python -m src.logquery`, not from a scrollback buffer.
 """
 
 from __future__ import annotations
@@ -23,6 +29,8 @@ import os
 import random
 import threading
 from dataclasses import dataclass
+
+from . import diagnostics
 
 log = logging.getLogger("storelink")
 
@@ -134,9 +142,19 @@ class FileStoreKeyProvider(StoreKeyProvider):
                 "Secrets file %s unreadable (%s); keeping the %d previously loaded keys",
                 self._path, e, len(self._keys),
             )
+            diagnostics.note("storelink_keys_reload_failed", path=self._path, error=str(e),
+                             keys_retained=len(self._keys))
             return
+        changed = sorted(
+            store for store in set(raw) | set(self._keys)
+            if raw.get(store) != self._keys.get(store)
+        )
         self._keys = raw
         self._stamp = (stat.st_mtime_ns, stat.st_size)
+        # Store ids only — never key material. This is how an FDE proves a
+        # rotation actually reached this server, and when.
+        diagnostics.note("storelink_keys_loaded", path=self._path, stores=len(raw),
+                         changed=changed or None)
 
     def _maybe_reload(self) -> None:
         try:
@@ -288,9 +306,16 @@ class StubStoreLinkClient:
         key = self._keys.get_key(store_id)
         if not self._key_accepted(store_id, key):
             log.warning("StoreLink rejected key for %s; reloading secrets and retrying once", store_id)
+            # Also into the diagnostic stream, correlated to the tool call in
+            # flight: a rotation that is retried transparently is invisible to
+            # the agent, and stderr is not queryable. "Did Tuesday's rotation
+            # cost us anything?" is a question for `logquery`, not a terminal.
+            diagnostics.note("storelink_key_rotation_retry", store_id=store_id)
             self._keys.refresh()
             key = self._keys.get_key(store_id)
             if not self._key_accepted(store_id, key):
+                diagnostics.note("storelink_key_expired", store_id=store_id,
+                                 key_source=self._keys.describe())
                 raise KeyExpired(
                     f"StoreLink rejected this server's key for store '{store_id}', even "
                     "after reloading secrets: the key has expired and this week's rotation "
