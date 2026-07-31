@@ -8,8 +8,33 @@ StoreLink calls are stubbed (`src/storelink.py`) behind the same interface a
 real HTTPS client would implement; everything above that line is the real
 deliverable.
 
-- How to run: see [DEPLOYMENT.md](DEPLOYMENT.md)
+- Full run/deploy options: see [DEPLOYMENT.md](DEPLOYMENT.md)
 - Author: Misha Sprindzhuk
+
+## Quick start
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest tests/ -q     # tool shapes, derived math, approval lifecycle
+python -m src.main             # MCP over stdio + approvals page on :8765
+```
+
+The repo ships a project-scoped [`.mcp.json`](.mcp.json), so Claude Code opened
+in this directory discovers the `storelink` server automatically — no manual
+config. (Other MCP clients: see the config snippet in
+[DEPLOYMENT.md](DEPLOYMENT.md).)
+
+**60-second demo** — the stub data includes a crafted low-stock case:
+
+1. Ask the agent for the stock position of `SKU-0451` at `ST-014`
+   (Fjord Smoked Salmon, Antwerp): 12 on hand, ~15/day velocity, 2-day lead
+   time → `stockout_risk: true`.
+2. Let it raise a replenishment order — the order queues as
+   `pending_approval`, nothing hits StoreLink yet.
+3. Open <http://127.0.0.1:8765>, read the agent's reason, click **Approve**.
+4. Have the agent poll `get_replenishment_order` — status is now `submitted`
+   with an expected delivery date.
 
 ## The tool surface
 
@@ -81,6 +106,7 @@ src/approvals_ui.py  Human approval web page (stdlib, port 8765)
 src/server.py        MCP tool surface (the 5 tools)
 src/main.py          Entry point: stdio (default) or --transport http
 tests/test_tools.py  Tool shapes, derived math, approval lifecycle
+.mcp.json            Project-scoped Claude Code config; auto-connects the server
 ```
 
 ## What's next (out of Step 1 scope)
