@@ -13,8 +13,21 @@ ST, SKU = "ST-014", "SKU-0451"  # crafted low-stock showcase: 12 on hand
 
 def test_list_stores_shape():
     stores = server.list_stores()
-    assert len(stores) == 6
+    assert len(stores) == 8
     assert {"store_id", "name", "city", "region"} <= stores[0].keys()
+
+
+def test_madeta_butter_scenario_differentiates_stores():
+    """Demo prompt: order where last-24h sales minus on-hand exceeds 6 units."""
+    def gap(store):
+        pos = server.get_stock_position(store, "8847291")
+        h = server.get_sales_history(store, "8847291", days=2)
+        return sum(d["units_sold"] for d in h["days"]) - pos["on_hand"]
+
+    assert gap("ST-047") > 6       # real shortfall -> should order
+    assert gap("ST-102") <= 6      # claim is false here -> should not order
+    assert server.get_stock_position("ST-047", "8847291")["stockout_risk"] is True
+    assert server.get_stock_position("ST-102", "8847291")["stockout_risk"] is False
 
 
 def test_stock_position_derives_cover_and_risk():

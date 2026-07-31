@@ -43,6 +43,8 @@ _STORES = [
     {"store_id": "ST-021", "name": "Korral Köln Ehrenfeld", "city": "Cologne", "region": "DE-West"},
     {"store_id": "ST-022", "name": "Korral München Schwabing", "city": "Munich", "region": "DE-South"},
     {"store_id": "ST-030", "name": "Korral København Vesterbro", "city": "Copenhagen", "region": "DK"},
+    {"store_id": "ST-047", "name": "Korral Praha Vinohrady", "city": "Prague", "region": "CZ"},
+    {"store_id": "ST-102", "name": "Korral Brno Střed", "city": "Brno", "region": "CZ"},
 ]
 
 _SUPPLIERS = {
@@ -50,6 +52,7 @@ _SUPPLIERS = {
     "SUP-02": {"supplier_id": "SUP-02", "name": "Alpenmilch Molkerei GmbH", "lead_time_days": 3},
     "SUP-03": {"supplier_id": "SUP-03", "name": "Terra Iberica Imports SL", "lead_time_days": 7},
     "SUP-04": {"supplier_id": "SUP-04", "name": "Boulangerie Fournil SARL", "lead_time_days": 1},
+    "SUP-05": {"supplier_id": "SUP-05", "name": "Madeta a.s.", "lead_time_days": 2},
 }
 
 _SKUS = {
@@ -61,14 +64,25 @@ _SKUS = {
     "SKU-2215": {"sku": "SKU-2215", "name": "Manchego Curado Wedge 200g", "category": "charcuterie", "supplier_id": "SUP-03"},
     "SKU-3001": {"sku": "SKU-3001", "name": "Sourdough Boule 600g", "category": "bakery", "supplier_id": "SUP-04"},
     "SKU-3004": {"sku": "SKU-3004", "name": "Rye Crispbread 350g", "category": "bakery", "supplier_id": "SUP-04"},
+    # Legacy numeric id kept as-is from Korral's old catalog import.
+    "8847291": {"sku": "8847291", "name": "Madeta Butter 250g", "category": "dairy", "supplier_id": "SUP-05"},
 }
 
 # Hand-crafted showcase positions: (store_id, sku) -> on_hand override.
-# ST-014 salmon is the canonical "empty by afternoon" case.
+# ST-014 salmon is the canonical "empty by afternoon" case. The Madeta
+# butter pair is a judgment test: ST-047 has a real gap, ST-102 does not.
 _ON_HAND_OVERRIDES = {
     ("ST-014", "SKU-0451"): 12,
     ("ST-001", "SKU-3001"): 0,
     ("ST-021", "SKU-2210"): 400,
+    ("ST-047", "8847291"): 2,
+    ("ST-102", "8847291"): 25,
+}
+
+# (store_id, sku) -> forced base daily demand, overriding the seeded random.
+_VELOCITY_OVERRIDES = {
+    ("ST-047", "8847291"): 20.0,
+    ("ST-102", "8847291"): 8.0,
 }
 
 
@@ -131,11 +145,14 @@ class StubStoreLinkClient:
         """Individual POS transactions since `since` (what the real API returns)."""
         self._auth(store_id)
         self.get_sku(sku)
-        rng = random.Random(f"pos:{store_id}:{sku}")
-        base = rng.uniform(2.0, 30.0)  # this SKU's daily demand at this store
+        base = _VELOCITY_OVERRIDES.get(
+            (store_id, sku), random.Random(f"pos:{store_id}:{sku}").uniform(2.0, 30.0))
         txns = []
         day = since
         while day <= self._now():
+            # Seed per calendar day so a given day's sales are identical
+            # regardless of the query window.
+            rng = random.Random(f"pos:{store_id}:{sku}:{day.isoformat()}")
             daily = max(0, int(rng.gauss(base, base * 0.3)))
             remaining = daily
             hour = 8

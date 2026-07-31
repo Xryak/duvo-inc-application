@@ -49,11 +49,17 @@ docker run -p 8000:8000 -p 8765:8765 storelink-mcp
 python -m pytest tests/ -q        # tool shapes, derived math, approval lifecycle
 ```
 
-Then the full loop: start the server, ask a connected agent for the stock
-position of `SKU-0451` at `ST-014` (crafted low-stock case: 12 on hand,
-~15/day velocity → `stockout_risk: true`), let it raise an order, open
-`http://127.0.0.1:8765`, click **Approve**, and have the agent re-check the
-order — status flips to `submitted` with a delivery date.
+Then the full loop with a connected agent. Demo prompt (crafted data —
+store 47 has a real gap, store 102 does not, so the agent should raise
+exactly one order):
+
+> SKU 8847291 (Madeta butter 250g) is running empty at stores 47 and 102.
+> Check on-hand vs. last 24h of POS for both, and raise a replenishment
+> order for any store where the gap exceeds 6 units.
+
+Open `http://127.0.0.1:8765`, click **Approve**, and have the agent
+re-check the order — status flips to `submitted` with a delivery date.
+(`SKU-0451` at `ST-014` is another crafted stockout: 12 on hand, ~15/day.)
 
 ## Notes & tradeoffs
 
