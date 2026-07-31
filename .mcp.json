@@ -4,7 +4,7 @@
       "command": "/Users/thexryak/duvo-inc-application/.venv/bin/python",
       "args": ["-m", "src.main"],
       "env": {
-        "PYTHONPATH": "/Users/thexryak/duvo-inc-application/.claude/worktrees/storelink-mcp"
+        "PYTHONPATH": "/Users/thexryak/duvo-inc-application"
       }
     }
   }
