@@ -1,10 +1,2 @@
-anthropic
-openai
-python-dotenv
-pandas
-openpyxl
-requests
-fastapi
-uvicorn
-playwright
+mcp
 pytest

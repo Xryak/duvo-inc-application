@@ -1,12 +1,36 @@
-"""Entry point. Replace with the actual task logic during the session."""
+"""Entry point: start the approvals web page, then serve MCP.
 
-from dotenv import load_dotenv
+Transports: stdio (default, for local agents / quick review) or
+streamable HTTP (`--transport http`, for running as an in-network service).
+All logging goes to stderr — stdout belongs to the MCP protocol.
+"""
 
-load_dotenv()
+import argparse
+import os
+import sys
+
+from .approvals_ui import start_approvals_server
+from .server import ledger, mcp
 
 
 def main() -> None:
-    print("Environment OK. Ready to build.")
+    parser = argparse.ArgumentParser(description="StoreLink MCP server")
+    parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    args = parser.parse_args()
+
+    host = os.getenv("APPROVALS_HOST", "127.0.0.1")
+    port = int(os.getenv("APPROVALS_PORT", "8765"))
+    start_approvals_server(ledger, host, port)
+    print(f"Approvals page: http://{host}:{port}", file=sys.stderr)
+
+    if args.transport == "http":
+        mcp.run(
+            transport="streamable-http",
+            host=os.getenv("MCP_HOST", "127.0.0.1"),
+            port=int(os.getenv("MCP_PORT", "8000")),
+        )
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":
