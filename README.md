@@ -68,6 +68,43 @@ invisible to it.
 - **Order cancel/edit** — the API doesn't offer it; the human Reject button is
   the kill switch.
 
+**Two log streams, not one.** Debugging and accountability are different jobs
+with different readers, so they get different files. Merging them would give
+the buyer MCP internals and give the engineer a file they must not truncate.
+
+| | `logs/diagnostic.jsonl` (FDE) | `logs/audit.jsonl` (buyer) |
+|---|---|---|
+| Answers | "what did the agent call, with what arguments, in what context, and what came back?" | "what was ordered on my behalf, on what evidence, and who signed off?" |
+| Written per | MCP message — every `tools/call`, plus each upstream StoreLink call and every error | business event — proposal, approval, rejection, StoreLink submission |
+| Keyed by | `session_id` + `request_id` | `order_id`, with a `trace` back to the request that caused it |
+| Read via | `python -m src.logquery` | the **Audit trail** page at `/audit`, or CSV |
+| Retention | rotates at 10 MB, safe to delete, can be switched off | append-only, never rotated, cannot be switched off |
+
+The correlation ids are the point: `logquery trace --session <id>` replays a
+whole agent conversation; `--request <id>` narrows to one call; `trace --order
+RO-1001` follows a single order across *both* streams — from the tool call that
+raised it to the buyer's click that approved it.
+
+Two things the diagnostic stream records that a plain "log the tool call"
+wouldn't: the **upstream StoreLink calls** each tool made (a wrong
+`days_of_cover` is usually a wrong input, and this shows all four inputs), and
+the **result the agent actually saw** (bounded to 4 KB), because explaining
+agent behaviour means knowing what it was told. Arguments are logged verbatim
+with credential-shaped keys redacted.
+
+**Evidence, not just reasons, in the audit trail.** `reason` is the agent's
+claim; every proposal entry also carries the stock numbers the agent had read
+for that store+SKU before proposing — on hand, velocity, days of cover,
+lead time, risk flag. A buyer checking last week's orders can see whether the
+stated reason matched the data. Decisions record the approver's name from the
+approvals page, marked `verified: false` while that page is unauthenticated —
+the record stays honest about how much it knows.
+
+**Naming.** Tool names are the buyer's verbs (`get_stock_position`, not
+`get_inventory`); docstrings are written as agent-facing contracts, including
+when *not* to act (e.g. "do not re-raise a rejected order without new
+evidence").
+
 ## Secrets & key rotation
 
 StoreLink keys are per-store and rotated weekly by Korral IT. The server reads
@@ -102,25 +139,28 @@ missing or malformed (better than running credential-less), but a malformed
 *overwrite* at runtime (e.g. read mid-write) keeps the last good keys and
 logs a warning rather than taking every store down.
 
-**Naming.** Tool names are the buyer's verbs (`get_stock_position`, not
-`get_inventory`); docstrings are written as agent-facing contracts, including
-when *not* to act (e.g. "do not re-raise a rejected order without new
-evidence").
-
 ## Structure
 
 ```
 src/storelink.py     StoreLink client interface + deterministic stub
 src/orders.py        Order ledger + approval state machine
-src/approvals_ui.py  Human approval web page (stdlib, port 8765)
+src/approvals_ui.py  Human pages (stdlib, port 8765): approvals + /audit trail
 src/server.py        MCP tool surface (the 5 tools)
 src/main.py          Entry point: stdio (default) or --transport http
+src/eventlog.py      Append-only JSONL sinks shared by both log streams
+src/diagnostics.py   FDE stream: tool-call middleware + upstream call capture
+src/audit.py         Buyer stream: order proposals, decisions, submissions
+src/logquery.py      `python -m src.logquery` — sessions / trace / errors / audit
 tests/test_tools.py  Tool shapes, derived math, approval lifecycle
+tests/test_keys.py   Secret loading, rotation retry, missing-credential paths
+tests/test_logging.py  Both streams, correlation, redaction, the query CLI
 ```
 
 ## What's next (out of Step 1 scope)
 
 SQLite persistence for the order ledger (pending approvals must survive a
-restart), auth on the approvals page (SSO via reverse proxy), the real HTTPS
-StoreLink client (the key-loading/rotation layer it will sit on is done), and
-deployment/runbook for Korral's network.
+restart), auth on the approvals page (SSO via reverse proxy — which is also
+what turns `actor.verified` true in the audit trail), the real HTTPS
+StoreLink client (the key-loading/rotation layer it will sit on is done), shipping `diagnostic.jsonl` to
+Korral's log collector with a retention policy, and deployment/runbook for
+Korral's network.

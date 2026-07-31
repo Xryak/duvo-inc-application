@@ -12,10 +12,14 @@ import os
 
 from mcp.server import MCPServer
 
+from . import audit
+from .diagnostics import ToolCallLogger, instrument_storelink
 from .orders import OrderLedger
 from .storelink import NotFound, StubStoreLinkClient, make_key_provider
 
-client = StubStoreLinkClient(keys=make_key_provider())
+# Instrumented at construction so every upstream StoreLink call is attributed
+# to the tool call that caused it (see src/diagnostics.py).
+client = instrument_storelink(StubStoreLinkClient(keys=make_key_provider()))
 ledger = OrderLedger(client)
 
 mcp = MCPServer(
@@ -26,6 +30,11 @@ mcp = MCPServer(
         "approval before they reach StoreLink."
     ),
 )
+
+# Logs every inbound MCP message with session/request correlation ids.
+# Registered on the server rather than wrapped around each tool so a call that
+# fails argument validation — never reaching a tool body — is still recorded.
+mcp.middleware.append(ToolCallLogger())
 
 
 def _approvals_url() -> str:
@@ -82,7 +91,7 @@ def get_stock_position(store_id: str, sku: str) -> dict:
     days_of_cover = round(on_hand / avg_daily, 1) if avg_daily > 0 else None
     stockout_risk = days_of_cover is not None and days_of_cover < supplier["lead_time_days"]
 
-    return {
+    position = {
         "store_id": store_id,
         "sku": sku,
         "sku_name": sku_info["name"],
@@ -97,6 +106,10 @@ def get_stock_position(store_id: str, sku: str) -> dict:
         "stockout_risk": stockout_risk,
         "open_orders": [o.to_dict() for o in ledger.open_for(store_id, sku)],
     }
+    # Keep the numbers the agent just saw, so an order it raises next carries
+    # the evidence it was based on into the buyer's audit trail.
+    audit.note_position_seen(store_id, sku, position)
+    return position
 
 
 @mcp.tool()
